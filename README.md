@@ -8,8 +8,7 @@ A production-ready Python application for semantic segmentation and instance det
 - **🎯 Semantic Segmentation**: Identifies roads, buildings, cars, vegetation, sidewalks, poles, and more classes
 - **📦 Instance Detection**: Groups points into individual object instances with detailed metadata
 - **💻 Console Interface**: User-friendly text-based GUI that works on any system (no graphics drivers needed)
-- **📁 Multiple Formats**: Supports .ply, .pcd, and .las input files
-- **⚡ Adaptive Processing**: Intelligent downsampling targeting ~100k points for optimal performance
+- **⚡ Adaptive Processing**: Intelligent downsampling targeting ~500k points for optimal performance
 - **💾 Comprehensive Export**: Colored PLY, detailed JSON metadata, and CSV summaries
 - **🧠 Pretrained Models**: Support for PointNet++, RandLA-Net, and E-3DSNN (Efficient 3D Spiking Neural Networks)
 - **🔧 Configurable Parameters**: Fine-tune detection sensitivity via configuration files

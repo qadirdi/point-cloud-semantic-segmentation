@@ -11,8 +11,9 @@ from loguru import logger
 
 from .model_loader import (
     get_semantic_colors, map_kitti_to_canonical, get_class_names,
-    get_discrete_classes, CANONICAL_CLASSES
+    get_discrete_classes, CANONICAL_CLASSES, get_recommended_model
 )
+from .enhanced_infer import run_enhanced_segmentation, PretrainedModelManager
 
 
 @dataclass
@@ -99,161 +100,183 @@ def run_segmentation_open3d_ml(pcd: o3d.geometry.PointCloud, model_path: str) ->
         
         # Run inference
         with torch.no_grad():
-            pred = model(torch.from_numpy(points_normalized).unsqueeze(0))
-            pred = pred.softmax(dim=-1)
-            scores, labels = pred.max(dim=-1)
+            # Convert to tensor
+            points_tensor = torch.from_numpy(points_normalized).unsqueeze(0)
+            
+            # Run model
+            logits = model(points_tensor)
+            probabilities = torch.softmax(logits, dim=-1)
+            predictions = torch.argmax(logits, dim=-1)
+            confidence_scores = torch.max(probabilities, dim=-1)[0]
         
-        labels = labels.numpy().flatten().astype(np.int32)
-        scores = scores.numpy().flatten().astype(np.float32)
-        
-        # Map to canonical classes
-        canonical_labels = map_kitti_to_canonical(labels)
+        # Convert to numpy
+        labels = predictions.numpy()[0]
+        scores = confidence_scores.numpy()[0]
         
         # Generate colors
         colors = np.zeros((len(points), 3), dtype=np.float64)
         semantic_colors = get_semantic_colors()
         
         for i, class_name in enumerate(CANONICAL_CLASSES):
-            mask = canonical_labels == i
+            mask = labels == i
             if np.any(mask) and class_name in semantic_colors:
                 colors[mask] = semantic_colors[class_name]
         
         return InferenceResult(
-            labels=canonical_labels,
+            labels=labels,
             scores=scores,
             class_names=CANONICAL_CLASSES,
             colors=colors
         )
         
     except ImportError:
-        logger.warning("Open3D-ML not available, falling back to dummy segmentation")
-        return run_segmentation_dummy(pcd)
+        logger.error("Open3D-ML not available")
+        return None
     except Exception as e:
         logger.error(f"Open3D-ML inference failed: {e}")
-        return run_segmentation_dummy(pcd)
+        return None
 
 
-def run_segmentation_onnx(pcd: o3d.geometry.PointCloud, model_path: str) -> InferenceResult:
-    """Run segmentation using ONNX model."""
+def run_segmentation_pretrained(
+    pcd: o3d.geometry.PointCloud,
+    model_name: Optional[str] = None,
+    force_download: bool = False
+) -> InferenceResult:
+    """Run segmentation using pretrained models."""
     try:
-        import onnxruntime as ort
+        # Use enhanced inference with pretrained models
+        enhanced_result = run_enhanced_segmentation(pcd, model_name, force_download)
         
-        points = np.asarray(pcd.points, dtype=np.float32)
+        if enhanced_result is None:
+            logger.warning("Enhanced segmentation failed, falling back to dummy segmentation")
+            return run_segmentation_dummy(pcd)
         
-        # Normalize points to [-1, 1] range
-        points_centered = points - points.mean(axis=0)
-        points_normalized = points_centered / (points_centered.std(axis=0) + 1e-8)
-        
-        # Create session
-        session = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
-        
-        # Get input name
-        input_name = session.get_inputs()[0].name
-        output_name = session.get_outputs()[0].name
-        
-        # Run inference
-        pred = session.run([output_name], {input_name: points_normalized.reshape(1, -1, 3)})[0]
-        
-        # Get labels and scores
-        labels = pred.argmax(axis=-1).flatten().astype(np.int32)
-        scores = pred.max(axis=-1).flatten().astype(np.float32)
-        
-        # Map KITTI labels to canonical classes
-        canonical_labels = map_kitti_to_canonical(labels)
-        
-        # Generate colors
-        colors = np.zeros((len(points), 3), dtype=np.float64)
-        semantic_colors = get_semantic_colors()
-        
-        for i, class_name in enumerate(CANONICAL_CLASSES):
-            mask = canonical_labels == i
-            if np.any(mask) and class_name in semantic_colors:
-                colors[mask] = semantic_colors[class_name]
-        
+        # Convert to InferenceResult format
         return InferenceResult(
-            labels=canonical_labels,
-            scores=scores,
-            class_names=CANONICAL_CLASSES,
-            colors=colors
+            labels=enhanced_result.labels,
+            scores=enhanced_result.scores,
+            class_names=enhanced_result.class_names,
+            colors=enhanced_result.colors
         )
         
-    except ImportError:
-        logger.warning("ONNX Runtime not available, falling back to dummy segmentation")
-        return run_segmentation_dummy(pcd)
     except Exception as e:
-        logger.error(f"ONNX inference failed: {e}")
+        logger.error(f"Pretrained model inference failed: {e}")
+        logger.warning("Falling back to dummy segmentation")
         return run_segmentation_dummy(pcd)
 
 
 def run_segmentation(
     pcd: o3d.geometry.PointCloud,
-    backend: str = "dummy",
-    model_path: Optional[str] = None
+    method: str = "auto",
+    model_name: Optional[str] = None,
+    model_path: Optional[str] = None,
+    force_download: bool = False
 ) -> InferenceResult:
-    """Run semantic segmentation on point cloud."""
-    logger.info(f"Running semantic segmentation with backend: {backend}")
+    """Run semantic segmentation using the specified method."""
     
-    if backend == "open3d_ml":
-        if model_path is None:
-            logger.warning("No model path provided for Open3D-ML, using dummy")
+    if method == "auto":
+        # Try pretrained models first, then fallback to dummy
+        logger.info("Using automatic method selection")
+        result = run_segmentation_pretrained(pcd, model_name, force_download)
+        if result is not None:
+            return result
+        else:
+            logger.warning("Pretrained models failed, using dummy segmentation")
             return run_segmentation_dummy(pcd)
-        return run_segmentation_open3d_ml(pcd, model_path)
     
-    elif backend == "onnx":
+    elif method == "pretrained":
+        logger.info("Using pretrained models")
+        result = run_segmentation_pretrained(pcd, model_name, force_download)
+        if result is None:
+            raise RuntimeError("Pretrained model segmentation failed")
+        return result
+    
+    elif method == "open3d_ml":
         if model_path is None:
-            logger.warning("No model path provided for ONNX, using dummy")
-            return run_segmentation_dummy(pcd)
-        return run_segmentation_onnx(pcd, model_path)
+            raise ValueError("model_path must be provided for Open3D-ML method")
+        logger.info("Using Open3D-ML")
+        result = run_segmentation_open3d_ml(pcd, model_path)
+        if result is None:
+            raise RuntimeError("Open3D-ML segmentation failed")
+        return result
     
-    elif backend == "dummy":
+    elif method == "dummy":
+        logger.info("Using dummy segmentation")
         return run_segmentation_dummy(pcd)
     
     else:
-        logger.warning(f"Unknown backend {backend}, using dummy")
-        return run_segmentation_dummy(pcd)
+        raise ValueError(f"Unknown segmentation method: {method}")
 
 
-def get_class_statistics(result: InferenceResult) -> dict:
-    """Get statistics about detected classes."""
-    unique_labels, counts = np.unique(result.labels, return_counts=True)
+def get_available_methods() -> list[str]:
+    """Get list of available segmentation methods."""
+    methods = ["auto", "dummy"]
     
+    # Check if pretrained models are available
+    try:
+        from .enhanced_infer import PretrainedModelManager
+        manager = PretrainedModelManager()
+        if len(manager.get_available_models()) > 0:
+            methods.append("pretrained")
+    except Exception:
+        pass
+    
+    # Check if Open3D-ML is available
+    try:
+        import open3d.ml.torch
+        methods.append("open3d_ml")
+    except ImportError:
+        pass
+    
+    return methods
+
+
+def get_recommended_method() -> str:
+    """Get the recommended segmentation method."""
+    methods = get_available_methods()
+    
+    if "pretrained" in methods:
+        return "pretrained"
+    elif "open3d_ml" in methods:
+        return "open3d_ml"
+    else:
+        return "dummy"
+
+
+def get_class_statistics(result: InferenceResult) -> dict[str, dict[str, float]]:
+    """Get statistics about the segmentation results."""
     stats = {}
-    for label, count in zip(unique_labels, counts):
-        if label < len(result.class_names):
-            class_name = result.class_names[label]
-            stats[class_name] = {
-                "count": int(count),
-                "percentage": float(count / len(result.labels) * 100),
-                "mean_score": float(result.scores[result.labels == label].mean())
+    total_points = len(result.labels)
+    
+    if total_points == 0:
+        return stats
+    
+    for i, class_name in enumerate(result.class_names):
+        mask = result.labels == i
+        count = np.sum(mask)
+        
+        if count > 0:
+            class_stats = {
+                'count': int(count),
+                'percentage': float(count / total_points * 100),
+                'mean_score': float(np.mean(result.scores[mask])),
+                'min_score': float(np.min(result.scores[mask])),
+                'max_score': float(np.max(result.scores[mask]))
             }
+            stats[class_name] = class_stats
     
     return stats
-
-
-def filter_by_class(
-    result: InferenceResult,
-    class_names: list[str],
-    min_score: float = 0.0
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Filter points by class and confidence score."""
-    class_indices = [result.class_names.index(name) for name in class_names if name in result.class_names]
-    
-    if not class_indices:
-        return np.array([]), np.array([]), np.array([])
-    
-    mask = np.isin(result.labels, class_indices) & (result.scores >= min_score)
-    
-    return result.labels[mask], result.scores[mask], result.colors[mask]
 
 
 __all__ = [
     "InferenceResult",
     "run_segmentation",
-    "run_segmentation_dummy", 
+    "run_segmentation_dummy",
     "run_segmentation_open3d_ml",
-    "run_segmentation_onnx",
-    "get_class_statistics",
-    "filter_by_class"
+    "run_segmentation_pretrained",
+    "get_available_methods",
+    "get_recommended_method",
+    "get_class_statistics"
 ]
 
 

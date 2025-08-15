@@ -19,12 +19,12 @@ from loguru import logger
 # Import from the existing pointroad package
 from pointroad.pointroad.io.loader import load_point_cloud
 from pointroad.pointroad.io.exporter import export_colored_point_cloud, export_instances_json, export_summary_csv
-from pointroad.pointroad.ml.infer import run_segmentation_dummy, get_class_statistics, InferenceResult
-from pointroad.pointroad.ml.enhanced_infer import run_enhanced_segmentation, get_enhanced_class_statistics
+from pointroad.pointroad.ml.infer import run_segmentation, get_class_statistics, InferenceResult, get_available_methods, get_recommended_method
+from pointroad.pointroad.ml.enhanced_infer import run_enhanced_segmentation, run_ensemble_segmentation
 from pointroad.pointroad.post.cluster import cluster_all_points
 from pointroad.pointroad.post.enhanced_cluster import enhanced_clustering_all_classes
 from pointroad.pointroad.post.color import generate_distinct_colors
-from pointroad.pointroad.ml.model_loader import get_semantic_colors, get_discrete_classes
+from pointroad.pointroad.ml.model_loader import get_semantic_colors, get_discrete_classes, get_available_models, get_model_info, get_recommended_model
 
 
 class ConsoleSemanticSegmentationGUI:
@@ -75,7 +75,7 @@ class ConsoleSemanticSegmentationGUI:
             print("  6. 🎨 Toggle class/instance visibility")
             print("  7. 💾 Export results")
             print("  8. 🔄 Process another file")
-            print("  9. ❓ Help")
+            print("  9. 🤖 Show available models and methods")
             print("  0. 🚪 Exit")
             
             try:
@@ -98,7 +98,7 @@ class ConsoleSemanticSegmentationGUI:
                 elif choice == "8":
                     self.select_file()
                 elif choice == "9":
-                    self.show_help()
+                    self.show_available_models()
                 elif choice == "0":
                     print("\n👋 Thank you for using Point Cloud Semantic Segmentation!")
                     break
@@ -217,25 +217,40 @@ class ConsoleSemanticSegmentationGUI:
             
             print(f"✅ Downsampled to {len(points_downsampled):,} points ({self.processing_stats['downsample_ratio']:.1%})")
             
-            # Run enhanced semantic segmentation
-            print("\n🔄 Step 3/5: Running enhanced semantic segmentation with car detection...")
+            # Run enhanced semantic segmentation with pretrained models
+            print("\n🔄 Step 3/5: Running enhanced semantic segmentation with pretrained models...")
             segment_start = time.time()
-            self.segmentation_result = run_enhanced_segmentation(pcd_downsampled, backend="enhanced")
+            
+            # Try to use pretrained models, fallback to dummy if needed
+            try:
+                self.segmentation_result = run_segmentation(pcd_downsampled, method="auto")
+                if hasattr(self.segmentation_result, 'model_name'):
+                    print(f"✅ Used model: {self.segmentation_result.model_name}")
+                else:
+                    print("✅ Used fallback segmentation method")
+            except Exception as e:
+                logger.warning(f"Pretrained models failed, using dummy: {e}")
+                self.segmentation_result = run_segmentation(pcd_downsampled, method="dummy")
+            
             segment_time = time.time() - segment_start
             self.processing_stats["segmentation_time"] = segment_time
             
-            class_stats = get_enhanced_class_statistics(self.segmentation_result)
+            class_stats = get_class_statistics(self.segmentation_result)
             car_points = np.sum(self.segmentation_result.labels == self.segmentation_result.class_names.index("car"))
             print(f"✅ Identified {len(class_stats)} semantic classes ({car_points:,} car points)")
             
             # Run enhanced clustering
             print("\n🔄 Step 4/5: Running enhanced instance clustering...")
             cluster_start = time.time()
+            
+            # Create dummy car confidence scores for backward compatibility
+            car_confidence_scores = np.ones(len(self.segmentation_result.labels)) * 0.8
+            
             self.cluster_labels, self.enhanced_instances = enhanced_clustering_all_classes(
                 pcd_downsampled, 
                 self.segmentation_result.labels,
                 self.segmentation_result.class_names,
-                self.segmentation_result.car_confidence_scores
+                car_confidence_scores
             )
             cluster_time = time.time() - cluster_start
             self.processing_stats["clustering_time"] = cluster_time
@@ -816,6 +831,60 @@ class ConsoleSemanticSegmentationGUI:
         print("\n🔧 SUPPORTED FORMATS:")
         print("   Input: .ply, .pcd, .las files")
         print("   Output: PLY (colored), JSON (metadata), CSV (summary)")
+        
+        input("\nPress Enter to continue...")
+    
+    def show_available_models(self):
+        """Show available models and methods."""
+        print("\n" + "─" * 60)
+        print("🤖 AVAILABLE MODELS & METHODS")
+        print("─" * 60)
+        
+        # Show available methods
+        print("🎯 SEGMENTATION METHODS:")
+        methods = get_available_methods()
+        for i, method in enumerate(methods, 1):
+            print(f"   {i}. {method.upper()}")
+        
+        recommended_method = get_recommended_method()
+        print(f"\n   💡 Recommended: {recommended_method.upper()}")
+        
+        # Show available models
+        print("\n🧠 PRETRAINED MODELS:")
+        models = get_available_models()
+        if models:
+            for model_name in models:
+                info = get_model_info(model_name)
+                if info:
+                    print(f"   📦 {model_name}")
+                    print(f"      Type: {info.get('model_type', 'unknown')}")
+                    print(f"      Dataset: {info.get('dataset', 'unknown')}")
+                    print(f"      Classes: {info.get('num_classes', 'unknown')}")
+                    print(f"      Description: {info.get('description', 'No description')}")
+                    print()
+        else:
+            print("   ⚠️  No pretrained models available")
+            print("   💡 Models will be downloaded automatically when needed")
+        
+        # Show model recommendations
+        print("🎯 MODEL RECOMMENDATIONS:")
+        recommendations = {
+            "toronto3d": "Urban scenes with buildings, roads, and infrastructure",
+            "semantickitti": "Road scenes with vehicles and traffic elements",
+            "urban": "Large-scale urban environments",
+            "general": "General purpose (default)"
+        }
+        
+        for dataset_type, description in recommendations.items():
+            recommended_model = get_recommended_model(dataset_type)
+            print(f"   🎯 {dataset_type.upper()}: {recommended_model}")
+            print(f"      {description}")
+        
+        print("\n💡 TIPS:")
+        print("   • Models are automatically downloaded when first used")
+        print("   • Toronto3D models are best for urban environments")
+        print("   • SemanticKITTI models are best for road scenes")
+        print("   • The system automatically selects the best model")
         
         input("\nPress Enter to continue...")
     

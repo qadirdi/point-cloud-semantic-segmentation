@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import numpy as np
 import open3d as o3d
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
+import os
+import yaml
+from pathlib import Path
 from loguru import logger
 
 try:
@@ -16,6 +19,48 @@ except ImportError:
     logger.warning("scikit-learn not available, using simplified clustering")
 
 from .cluster import InstanceInfo
+
+
+def load_config() -> Dict[str, Any]:
+    """Load enhanced detection configuration."""
+    # Look for config in multiple locations
+    config_paths = [
+        # Current directory
+        Path("enhanced_detection.yaml"),
+        # Config directory
+        Path(__file__).parent.parent / "config" / "enhanced_detection.yaml",
+        # User-specified path via environment variable
+        Path(os.environ.get("POINTROAD_CONFIG", "")) / "enhanced_detection.yaml"
+    ]
+    
+    for path in config_paths:
+        if path.exists():
+            try:
+                with open(path, 'r') as f:
+                    config = yaml.safe_load(f)
+                logger.info(f"Loaded enhanced detection config from {path}")
+                return config
+            except Exception as e:
+                logger.warning(f"Failed to load config from {path}: {e}")
+    
+    # Return default config if no file found
+    logger.info("Using default detection parameters")
+    return {
+        "car_detection": {
+            "clustering": {
+                "eps": 0.3,
+                "min_points": 30,
+                "confidence_threshold": 0.65
+            },
+            "dimensions": {
+                "length_range": [3.0, 6.0],
+                "width_range": [1.5, 2.5],
+                "height_range": [1.2, 2.2],
+                "volume_range": [8.0, 30.0],
+                "aspect_ratio_range": [1.5, 3.0]
+            }
+        }
+    }
 
 
 def simple_distance_clustering(points: np.ndarray, eps: float, min_points: int) -> np.ndarray:
@@ -127,12 +172,20 @@ def analyze_car_dimensions(points: np.ndarray) -> Dict[str, float]:
 def is_car_like_cluster(points: np.ndarray, dimensions: Dict[str, float], car_confidence: float) -> Tuple[bool, float]:
     """Determine if a cluster is likely to be a car based on multiple criteria."""
     
+    # Load configuration
+    config = load_config()
+    car_config = config.get("car_detection", {})
+    dim_config = car_config.get("dimensions", {})
+    
     # Typical car dimensions (in meters)
-    CAR_LENGTH_RANGE = (3.0, 6.0)      # 3-6 meters
-    CAR_WIDTH_RANGE = (1.5, 2.5)       # 1.5-2.5 meters  
-    CAR_HEIGHT_RANGE = (1.2, 2.2)      # 1.2-2.2 meters
-    CAR_VOLUME_RANGE = (8.0, 30.0)     # 8-30 cubic meters
-    CAR_ASPECT_RATIO_RANGE = (1.5, 3.0) # Length/width ratio
+    CAR_LENGTH_RANGE = tuple(dim_config.get("length_range", [3.0, 6.0]))
+    CAR_WIDTH_RANGE = tuple(dim_config.get("width_range", [1.5, 2.5]))
+    CAR_HEIGHT_RANGE = tuple(dim_config.get("height_range", [1.2, 2.2]))
+    CAR_VOLUME_RANGE = tuple(dim_config.get("volume_range", [8.0, 30.0]))
+    CAR_ASPECT_RATIO_RANGE = tuple(dim_config.get("aspect_ratio_range", [1.5, 3.0]))
+    
+    # Confidence threshold from config
+    confidence_threshold = car_config.get("clustering", {}).get("confidence_threshold", 0.65)
     
     length = dimensions["length"]
     width = dimensions["width"]
@@ -204,8 +257,8 @@ def is_car_like_cluster(points: np.ndarray, dimensions: Dict[str, float], car_co
     # Combine with car confidence from segmentation
     final_score = 0.6 * geometric_score + 0.4 * car_confidence
     
-    # Threshold for car classification
-    is_car = final_score > 0.65
+    # Use configurable threshold for car classification
+    is_car = final_score > confidence_threshold
     
     logger.debug(f"Car analysis - Dims: {length:.1f}x{width:.1f}x{height:.1f}, "
                 f"Density: {point_density:.1f}, Scores: geo={geometric_score:.3f}, "
@@ -217,9 +270,18 @@ def is_car_like_cluster(points: np.ndarray, dimensions: Dict[str, float], car_co
 def enhanced_car_clustering(pcd: o3d.geometry.PointCloud, 
                            car_confidence_scores: np.ndarray,
                            car_mask: np.ndarray,
-                           eps: float = 0.3,
-                           min_points: int = 30) -> Tuple[np.ndarray, List[EnhancedInstanceInfo]]:
+                           eps: float = None,
+                           min_points: int = None) -> Tuple[np.ndarray, List[EnhancedInstanceInfo]]:
     """Enhanced clustering specifically optimized for car detection."""
+    # Load configuration
+    config = load_config()
+    car_config = config.get("car_detection", {}).get("clustering", {})
+    
+    # Use provided parameters or fall back to config values
+    if eps is None:
+        eps = car_config.get("eps", 0.25)  # Use tighter clustering by default
+    if min_points is None:
+        min_points = car_config.get("min_points", 20)  # Reduced minimum points
     
     points = np.asarray(pcd.points)
     total_points = len(points)
@@ -235,7 +297,7 @@ def enhanced_car_clustering(pcd: o3d.geometry.PointCloud,
     
     # Use smaller eps for cars (they're more compact)
     car_eps = eps * 0.7  # Tighter clustering for cars
-    car_min_points = max(min_points, 20)  # Minimum points for a car
+    car_min_points = min_points  # Using configured min_points
     
     # Run DBSCAN on potential car points
     if SKLEARN_AVAILABLE:
@@ -323,10 +385,16 @@ def enhanced_car_clustering(pcd: o3d.geometry.PointCloud,
 def enhanced_clustering_all_classes(pcd: o3d.geometry.PointCloud,
                                   labels: np.ndarray,
                                   class_names: List[str],
-                                  car_confidence_scores: np.ndarray,
+                                  car_confidence_scores: np.ndarray = None,
                                   eps_by_class: Optional[Dict[str, float]] = None,
                                   min_points_by_class: Optional[Dict[str, int]] = None) -> Tuple[np.ndarray, List[EnhancedInstanceInfo]]:
     """Enhanced clustering for all classes with car-specific optimization."""
+    # Load configuration
+    config = load_config()
+    
+    # If car confidence scores not provided, use dummy ones
+    if car_confidence_scores is None:
+        car_confidence_scores = np.ones(len(labels)) * 0.8
     
     points = np.asarray(pcd.points)
     total_points = len(points)
@@ -337,25 +405,32 @@ def enhanced_clustering_all_classes(pcd: o3d.geometry.PointCloud,
     # Default parameters optimized for each class
     if eps_by_class is None:
         eps_by_class = {
-            "car": 0.3,        # Tight clustering for cars
-            "building": 1.0,    # Looser for buildings
-            "road": 2.0,       # Very loose for road segments
-            "sidewalk": 0.8,   # Medium for sidewalks
-            "vegetation": 0.6,  # Medium-tight for vegetation
-            "pole": 0.4,       # Tight for poles
+            "car": config.get("car_detection", {}).get("clustering", {}).get("eps", 0.25),  # Tighter for cars
+            "building": 0.8,    # Looser for buildings
+            "road": 1.5,       # Very loose for road segments
+            "sidewalk": 0.7,   # Medium for sidewalks
+            "vegetation": 0.5,  # Medium-tight for vegetation
+            "pole": 0.35,       # Tighter for poles
             "unlabeled": 0.5   # Default
         }
     
+    # Default minimum points per class
+    default_min_points = {
+        "car": config.get("car_detection", {}).get("clustering", {}).get("min_points", 20),  # Reduced for cars
+        "building": 50,    # Higher for buildings
+        "road": 100,       # Much higher for road segments
+        "sidewalk": 40,    # Medium for sidewalks
+        "vegetation": 20,  # Lower for vegetation
+        "pole": 15,        # Lower for poles
+        "unlabeled": 20    # Default
+    }
+    
+    # Use provided min_points or merge defaults with config
     if min_points_by_class is None:
-        min_points_by_class = {
-            "car": 30,         # Higher minimum for cars
-            "building": 50,    # Higher for buildings
-            "road": 100,       # Much higher for road segments
-            "sidewalk": 40,    # Medium for sidewalks
-            "vegetation": 20,  # Lower for vegetation
-            "pole": 15,        # Lower for poles
-            "unlabeled": 20    # Default
-        }
+        min_points_by_class = {}
+        for class_name, default_min in default_min_points.items():
+            class_config = config.get("class_parameters", {}).get(class_name, {})
+            min_points_by_class[class_name] = class_config.get("min_points", default_min)
     
     all_cluster_labels = np.full(total_points, -1)
     all_instances = []
@@ -446,5 +521,6 @@ __all__ = [
     "enhanced_car_clustering",
     "enhanced_clustering_all_classes",
     "analyze_car_dimensions",
-    "is_car_like_cluster"
+    "is_car_like_cluster",
+    "load_config"
 ]

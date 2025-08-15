@@ -1,0 +1,24 @@
+{
+  "models": {
+    "pointnet2_toronto3d": {
+      "path": "models\\pointnet2_toronto3d.pth",
+      "downloaded": true,
+      "description": "PointNet++ trained on Toronto3D dataset (DUMMY)",
+      "is_dummy": true
+    },
+    "randla_net_toronto3d": {
+      "path": "models\\randla_net_toronto3d.pth",
+      "downloaded": true,
+      "description": "RandLA-Net trained on Toronto3D dataset (DUMMY)",
+      "is_dummy": true
+    },
+    "pointnet2_semantickitti": {
+      "path": "models\\pointnet2_semantickitti.pth",
+      "downloaded": true,
+      "description": "PointNet++ trained on SemanticKITTI dataset (DUMMY)",
+      "is_dummy": true
+    }
+  },
+  "model_dir": "models",
+  "dummy_models": true
+}

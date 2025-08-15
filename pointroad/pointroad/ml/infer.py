@@ -26,42 +26,157 @@ class InferenceResult:
 
 
 def run_segmentation_dummy(pcd: o3d.geometry.PointCloud) -> InferenceResult:
-    """Dummy segmentation that assigns random classes for testing."""
+    """Enhanced dummy segmentation with improved heuristics for car detection."""
     points = np.asarray(pcd.points)
     num_points = len(points)
     
-    # Create realistic dummy segmentation based on height and position
-    labels = np.zeros(num_points, dtype=np.int32)
-    scores = np.random.uniform(0.7, 0.95, num_points)
+    if num_points == 0:
+        return InferenceResult(
+            labels=np.array([]),
+            scores=np.array([]),
+            class_names=CANONICAL_CLASSES,
+            colors=np.array([]).reshape(0, 3)
+        )
     
-    # Simple height-based classification
+    # Create realistic segmentation based on geometric analysis
+    labels = np.full(num_points, CANONICAL_CLASSES.index("unlabeled"), dtype=np.int32)
+    scores = np.ones(num_points) * 0.8  # More consistent confidence
+    
     z_coords = points[:, 2]
     x_coords = points[:, 0]
     y_coords = points[:, 1]
     
-    # Ground level classes
-    ground_mask = z_coords < 0.1
-    labels[ground_mask] = CANONICAL_CLASSES.index("road")
+    # Calculate local point density for better classification
+    try:
+        from sklearn.neighbors import NearestNeighbors
+        nbrs = NearestNeighbors(n_neighbors=min(10, num_points)).fit(points)
+        distances, _ = nbrs.kneighbors(points)
+        local_density = 1.0 / (np.mean(distances[:, 1:], axis=1) + 1e-6)
+        density_percentile = np.percentile(local_density, [25, 50, 75])
+    except:
+        # Fallback if sklearn not available
+        local_density = np.ones(num_points)
+        density_percentile = [1, 1, 1]
     
-    # Sidewalk (slightly elevated)
-    sidewalk_mask = (z_coords >= 0.1) & (z_coords < 0.3)
-    labels[sidewalk_mask] = CANONICAL_CLASSES.index("sidewalk")
+    # Ground level (roads and sidewalks)
+    ground_height = np.percentile(z_coords, 10)  # Adaptive ground level
+    ground_mask = z_coords <= (ground_height + 0.2)
     
-    # Buildings (tall structures)
-    building_mask = z_coords > 2.0
+    # Roads: low, flat, high density
+    road_mask = ground_mask & (local_density > density_percentile[1])
+    labels[road_mask] = CANONICAL_CLASSES.index("road")
+    scores[road_mask] = 0.9
+    
+    # Sidewalks: slightly elevated from road, medium density
+    sidewalk_mask = (z_coords > ground_height + 0.1) & (z_coords < ground_height + 0.5) & ~road_mask
+    labels[sidewalk_mask] = CANONICAL_CLASSES.index("sidewalk") 
+    scores[sidewalk_mask] = 0.85
+    
+    # Buildings: tall structures with high density
+    building_height_threshold = ground_height + 3.0
+    building_mask = (z_coords > building_height_threshold) & (local_density > density_percentile[2])
     labels[building_mask] = CANONICAL_CLASSES.index("building")
+    scores[building_mask] = 0.9
     
-    # Vegetation (medium height, scattered)
-    veg_mask = (z_coords >= 0.3) & (z_coords <= 2.0) & (np.random.random(num_points) < 0.3)
-    labels[veg_mask] = CANONICAL_CLASSES.index("vegetation")
+    # Enhanced car detection using multiple criteria
+    car_height_min = ground_height + 0.3
+    car_height_max = ground_height + 2.2
     
-    # Poles (thin vertical structures)
-    pole_mask = (z_coords > 1.5) & (np.random.random(num_points) < 0.05)
-    labels[pole_mask] = CANONICAL_CLASSES.index("pole")
+    # Base car candidates: right height range
+    car_candidates = (z_coords >= car_height_min) & (z_coords <= car_height_max)
+    car_candidates &= ~road_mask & ~sidewalk_mask & ~building_mask
     
-    # Cars (low height, on ground)
-    car_mask = (z_coords >= 0.1) & (z_coords < 1.5) & (np.random.random(num_points) < 0.1)
-    labels[car_mask] = CANONICAL_CLASSES.index("car")
+    if np.any(car_candidates):
+        candidate_points = points[car_candidates]
+        candidate_z = z_coords[car_candidates]
+        candidate_density = local_density[car_candidates]
+        
+        logger.debug(f"Car candidates: {len(candidate_points)} points in height range {car_height_min:.2f}-{car_height_max:.2f}")
+        
+        # Analyze spatial distribution for car-like clusters
+        try:
+            from sklearn.cluster import DBSCAN
+            clustering = DBSCAN(eps=0.6, min_samples=15).fit(candidate_points)
+            cluster_labels = clustering.labels_
+            
+            # Evaluate each cluster for car-likeness
+            unique_clusters = np.unique(cluster_labels)
+            valid_clusters = unique_clusters[unique_clusters >= 0]
+            car_mask_candidates = np.zeros(len(candidate_points), dtype=bool)
+            
+            logger.debug(f"Found {len(valid_clusters)} valid clusters from {len(unique_clusters)} total clusters")
+            
+            for cluster_id in valid_clusters:
+                cluster_mask = cluster_labels == cluster_id
+                cluster_points = candidate_points[cluster_mask]
+                
+                if len(cluster_points) < 15:  # Too few points
+                    continue
+                
+                # Analyze cluster dimensions
+                min_coords = np.min(cluster_points, axis=0)
+                max_coords = np.max(cluster_points, axis=0)
+                dimensions = max_coords - min_coords
+                
+                length, width, height = np.sort(dimensions)[::-1]  # Sort descending
+                
+                # Car-like dimension checks (more permissive)
+                is_car_like = (
+                    2.0 <= length <= 8.0 and      # Car length (wider range)
+                    1.0 <= width <= 3.5 and       # Car width (wider range)
+                    0.5 <= height <= 3.0 and      # Car height (wider range)
+                    1.0 <= length/width <= 6.0    # More permissive aspect ratio
+                )
+                
+                if is_car_like:
+                    # Additional checks for car-like properties
+                    cluster_z_range = np.max(cluster_points[:, 2]) - np.min(cluster_points[:, 2])
+                    cluster_density_mean = np.mean(candidate_density[cluster_mask])
+                    
+                    density_check = cluster_density_mean > 0.1  # Simple fixed threshold
+                    height_check = cluster_z_range > 0.3
+                    
+                    # Cars should have reasonable height variation and medium density (more permissive)
+                    if height_check and density_check:
+                        car_mask_candidates[cluster_mask] = True
+            
+        except:
+            # Fallback: use density and height criteria only
+            height_score = 1.0 - np.abs(candidate_z - (car_height_min + car_height_max) / 2) / ((car_height_max - car_height_min) / 2)
+            density_score = np.clip(candidate_density / density_percentile[1], 0, 2) / 2
+            combined_score = (height_score + density_score) / 2
+            car_mask_candidates = combined_score > 0.6
+        
+        # Apply car labels
+        car_indices = np.where(car_candidates)[0][car_mask_candidates]
+        labels[car_indices] = CANONICAL_CLASSES.index("car")
+        scores[car_indices] = 0.8
+    
+    # Vegetation: medium height, scattered, medium-low density
+    veg_mask = (z_coords > ground_height + 0.5) & (z_coords < building_height_threshold)
+    veg_mask &= (local_density < density_percentile[2]) & ~building_mask
+    veg_mask &= labels == CANONICAL_CLASSES.index("unlabeled")  # Don't override other classes
+    
+    # Random sampling for vegetation (not all medium-height points are vegetation)
+    if np.any(veg_mask):
+        veg_indices = np.where(veg_mask)[0]
+        # Sample based on position variation (more scattered = more likely vegetation)
+        n_sample = min(len(veg_indices), int(len(veg_indices) * 0.4))
+        sampled_veg = np.random.choice(veg_indices, n_sample, replace=False)
+        labels[sampled_veg] = CANONICAL_CLASSES.index("vegetation")
+        scores[sampled_veg] = 0.7
+    
+    # Poles: very high, thin structures with low point count
+    pole_mask = (z_coords > building_height_threshold) & (local_density < density_percentile[0])
+    pole_mask &= labels == CANONICAL_CLASSES.index("unlabeled")
+    if np.any(pole_mask):
+        # Randomly sample some pole candidates
+        pole_indices = np.where(pole_mask)[0]
+        n_sample = min(len(pole_indices), int(len(pole_indices) * 0.1))
+        if n_sample > 0:
+            sampled_poles = np.random.choice(pole_indices, n_sample, replace=False)
+            labels[sampled_poles] = CANONICAL_CLASSES.index("pole")
+            scores[sampled_poles] = 0.75
     
     # Generate colors
     colors = np.zeros((num_points, 3), dtype=np.float64)
@@ -71,6 +186,8 @@ def run_segmentation_dummy(pcd: o3d.geometry.PointCloud) -> InferenceResult:
         mask = labels == i
         if np.any(mask) and class_name in semantic_colors:
             colors[mask] = semantic_colors[class_name]
+    
+    logger.info(f"Enhanced dummy segmentation complete: {np.sum(labels == CANONICAL_CLASSES.index('car'))} car points detected")
     
     return InferenceResult(
         labels=labels,
@@ -211,23 +328,25 @@ def run_segmentation(
 def get_available_methods() -> list[str]:
     """Get list of available segmentation methods."""
     methods = ["auto", "dummy"]
-    
-    # Check if pretrained models are available
+
+    # Check if pretrained models pathway is usable (do not actually download)
     try:
         from .enhanced_infer import PretrainedModelManager
-        manager = PretrainedModelManager()
-        if len(manager.get_available_models()) > 0:
-            methods.append("pretrained")
+        _ = PretrainedModelManager()  # ensures torch available
+        # Pretrained mode is always available logically; the manager handles runtime errors
+        methods.append("pretrained")
     except Exception:
         pass
-    
-    # Check if Open3D-ML is available
+
+    # Check if Open3D-ML is importable without raising the confusing warning
     try:
-        import open3d.ml.torch
+        import importlib
+        _o3d_ml = importlib.import_module("open3d.ml.torch")
         methods.append("open3d_ml")
-    except ImportError:
+    except Exception:
+        # Do not expose Open3D-ML when not properly built
         pass
-    
+
     return methods
 
 

@@ -1,0 +1,51 @@
+# Enhanced Object Detection Configuration
+
+# Car detection parameters
+car_detection:
+  # Clustering parameters
+  clustering:
+    eps: 0.4                 # Increased epsilon for more inclusive clustering
+    min_points: 15           # Further reduced minimum points for smaller cars
+    confidence_threshold: 0.5 # Lower threshold to detect more potential cars
+
+  # Dimensional constraints (more permissive)
+  dimensions:
+    length_range: [2.0, 8.0]  # Very wide range to catch all vehicle types
+    width_range: [1.2, 3.2]   # Expanded range for different vehicle widths
+    height_range: [0.8, 3.0]  # Expanded range for trucks and small cars
+    volume_range: [4.0, 50.0] # Very wide volume range
+    aspect_ratio_range: [1.0, 5.0] # Very flexible aspect ratio
+
+# General object detection
+object_detection:
+  # Downsampling parameters
+  downsampling:
+    target_points: 120000     # Increased from default 100000 for more detail
+    preserve_classes: ["car", "pole", "traffic_sign"] # Preserve important classes during downsampling
+
+  # Segmentation parameters
+  segmentation:
+    ground_removal_height: 0.15  # Height threshold for ground removal
+    min_cluster_size: 15         # Minimum points for general objects
+    max_cluster_distance: 0.5    # Maximum distance between points in a cluster
+
+# Class-specific parameters
+class_parameters:
+  car:
+    color: [0, 0, 255]           # Blue for cars
+    min_confidence: 0.6          # Minimum confidence score
+  building:
+    color: [70, 130, 180]        # Steel blue for buildings
+    min_confidence: 0.5
+  pole:
+    color: [153, 153, 153]       # Gray for poles
+    min_confidence: 0.5
+  vegetation:
+    color: [107, 142, 35]        # Olive green for vegetation
+    min_confidence: 0.5
+  road:
+    color: [128, 64, 128]        # Purple for roads
+    min_confidence: 0.7
+  sidewalk:
+    color: [244, 35, 232]        # Pink for sidewalks
+    min_confidence: 0.6

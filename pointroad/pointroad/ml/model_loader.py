@@ -11,6 +11,13 @@ import numpy as np
 import open3d as o3d
 from loguru import logger
 
+# Optional Hugging Face Hub support (provides authenticated downloads)
+try:
+    from huggingface_hub import hf_hub_download
+    HF_AVAILABLE = True
+except Exception:
+    HF_AVAILABLE = False
+
 # Toronto3D class definitions (more comprehensive than SemanticKITTI)
 TORONTO3D_CLASSES = {
     0: "unlabeled",
@@ -200,34 +207,123 @@ def get_model_cache_dir() -> Path:
     return cache_dir
 
 
+def get_local_models_dirs() -> List[Path]:
+    """Return a prioritized list of directories to search for local model files."""
+    candidates: List[Path] = []
+
+    # 1) Explicit override via env var
+    env_dir = os.environ.get("POINTROAD_MODELS_DIR")
+    if env_dir:
+        p = Path(env_dir).expanduser().resolve()
+        candidates.append(p)
+
+    # 2) Project-level models directory
+    try:
+        project_root = Path(__file__).resolve().parents[3]
+        candidates.append(project_root / "models")
+    except Exception:
+        pass
+
+    # 3) Current working directory models dir
+    candidates.append(Path.cwd() / "models")
+
+    # 4) User cache dir
+    candidates.append(get_model_cache_dir())
+
+    return candidates
+
+
+def find_local_model_file(model_name: str) -> Optional[Path]:
+    """Check common locations for an already-present model weight file.
+
+    Looks for `<model_name>.pth` in:
+    - `POINTROAD_MODELS_DIR` (if set)
+    - `<repo>/models/`
+    - `<cwd>/models/`
+    - user cache `~/.cache/pointroad/models/`
+    """
+    for directory in get_local_models_dirs():
+        candidate = directory / f"{model_name}.pth"
+        if candidate.exists():
+            logger.info(f"Found local model file: {candidate}")
+            return candidate
+    return None
+
+
 def download_model(model_name: str, force_download: bool = False) -> Optional[Path]:
-    """Download a pretrained model."""
+    """Obtain a pretrained model weight file, preferring local copies, with HF auth fallback.
+
+    Resolution order:
+    1) If a local file exists in known locations, use it.
+    2) If not or force_download is True, try Hugging Face Hub (if available),
+       using `HUGGINGFACE_HUB_TOKEN` / `HF_TOKEN` / `HUGGINGFACE_TOKEN` if set.
+    3) Finally, fallback to direct URL download.
+    """
     if model_name not in MODEL_CONFIGS:
         logger.error(f"Unknown model: {model_name}")
         return None
-    
+
     config = MODEL_CONFIGS[model_name]
+
+    # Step 1: reuse existing local model if present
+    if not force_download:
+        local_path = find_local_model_file(model_name)
+        if local_path is not None:
+            return local_path
+
     cache_dir = get_model_cache_dir()
     model_path = cache_dir / f"{model_name}.pth"
-    
-    if model_path.exists() and not force_download:
-        logger.info(f"Model {model_name} already exists at {model_path}")
-        return model_path
-    
-    logger.info(f"Downloading model {model_name} from {config['url']}")
-    try:
-        # Create a progress bar for download
-        def show_progress(block_num, block_size, total_size):
-            if total_size > 0:
-                percent = min(100, (block_num * block_size * 100) // total_size)
-                logger.info(f"Download progress: {percent}%")
-        
-        urllib.request.urlretrieve(config['url'], model_path, show_progress)
-        logger.info(f"Downloaded model to {model_path}")
-        return model_path
-    except Exception as e:
-        logger.error(f"Failed to download model: {e}")
-        return None
+
+    # Step 2: try Hugging Face Hub if available and repo hints present
+    hf_repo: Optional[str] = config.get("hf_repo")
+    hf_filename: Optional[str] = config.get("hf_filename")
+    if HF_AVAILABLE and hf_repo and hf_filename:
+        logger.info(f"Attempting download via Hugging Face Hub: repo={hf_repo}, file={hf_filename}")
+        # Token detection from common env vars
+        hf_token = (
+            os.environ.get("HUGGINGFACE_HUB_TOKEN")
+            or os.environ.get("HF_TOKEN")
+            or os.environ.get("HUGGINGFACE_TOKEN")
+        )
+        try:
+            downloaded_path = hf_hub_download(
+                repo_id=hf_repo,
+                filename=hf_filename,
+                token=hf_token,
+                local_dir=str(cache_dir),
+                local_dir_use_symlinks=False,
+                resume_download=True,
+            )
+            logger.info(f"Downloaded model to {downloaded_path}")
+            return Path(downloaded_path)
+        except Exception as e:
+            logger.error(
+                "Hugging Face download failed. If the repository is private, set an access token in "
+                "HUGGINGFACE_HUB_TOKEN or HF_TOKEN. Error: {}".format(e)
+            )
+
+    # Step 3: fallback to direct URL
+    url = config.get("url")
+    if url:
+        logger.info(f"Downloading model {model_name} from {url}")
+        try:
+            def show_progress(block_num, block_size, total_size):
+                if total_size > 0:
+                    percent = min(100, (block_num * block_size * 100) // total_size)
+                    logger.info(f"Download progress: {percent}%")
+
+            urllib.request.urlretrieve(url, model_path, show_progress)
+            logger.info(f"Downloaded model to {model_path}")
+            return model_path
+        except Exception as e:
+            logger.error(
+                "Direct URL download failed: {}. You can place the file manually at: {} or set "
+                "POINTROAD_MODELS_DIR to a directory containing {}.pth".format(e, model_path, model_name)
+            )
+            return None
+
+    logger.error("No download method available for this model. Provide local weights or HF config.")
+    return None
 
 
 def get_available_models() -> List[str]:

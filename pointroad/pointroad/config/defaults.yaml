@@ -1,0 +1,54 @@
+app:
+  theme: dark
+  autosave_project: true
+  recent_limit: 10
+
+io:
+  default_format: ply
+
+downsample:
+  target_points_min: 200000
+  target_points_max: 400000
+  initial_voxel_size: 0.05
+  plane_guardrail_rmse: 0.02
+  adaptive_max_voxel_size: 0.25
+  tile_threshold_points: 20000000
+  tile_overlap_ratio: 0.05
+
+segmentation:
+  backend: open3d_ml # or onnx
+  model_name: RandLA-Net_SemanticKITTI
+  score_threshold: 0.3
+  batch_points: 250000
+  use_gpu_if_available: true
+
+clustering:
+  eps_meters: 0.4
+  min_points: 20
+
+classes:
+  - road
+  - sidewalk
+  - curb
+  - pole
+  - traffic_sign
+  - car
+  - bicycle
+  - pedestrian
+  - vegetation
+  - building
+
+colors:
+  road: "#808080"
+  sidewalk: "#A9A9A9"
+  curb: "#FFD700"
+  pole: "#87CEFA"
+  traffic_sign: "#FFA500"
+  car: "#FF0000"
+  bicycle: "#00FF00"
+  pedestrian: "#800080"
+  vegetation: "#006400"
+  building: "#8B4513"
+
+
+

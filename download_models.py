@@ -40,6 +40,11 @@ except ImportError:
         "pointnet2_semantickitti": {
             "url": "https://huggingface.co/datasets/PointCloudLibrary/pointnet2/resolve/main/pointnet2_semantickitti.pth",
             "description": "PointNet++ trained on SemanticKITTI dataset"
+        },
+        "e3dsnn_kitti": {
+            "hf_repo": "Xuerui123/E-3DSNN",
+            "hf_filename": "kitti.pth",
+            "description": "E-3DSNN (Efficient 3D Spiking Neural Network) - 91.7% accuracy, 1.87M parameters"
         }
     }
 

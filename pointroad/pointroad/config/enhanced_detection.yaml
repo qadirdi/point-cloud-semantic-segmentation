@@ -20,7 +20,7 @@ car_detection:
 object_detection:
   # Downsampling parameters
   downsampling:
-    target_points: 120000     # Increased from default 100000 for more detail
+    target_points: 500000     # Significantly increased for better E-3DSNN model performance
     preserve_classes: ["car", "pole", "traffic_sign"] # Preserve important classes during downsampling
 
   # Segmentation parameters

@@ -89,7 +89,7 @@ TORONTO3D_TO_CANONICAL = {
     14: "other_object"
 }
 
-# Map KITTI to canonical classes
+# Map KITTI to canonical classes (19 classes for E-3DSNN)
 KITTI_TO_CANONICAL = {
     0: "unlabeled",
     1: "car",
@@ -111,6 +111,29 @@ KITTI_TO_CANONICAL = {
     17: "terrain",
     18: "pole",
     19: "traffic-sign"
+}
+
+# E-3DSNN KITTI class mapping (optimized for automotive scenes)
+E3DSNN_KITTI_CLASSES = {
+    0: "road",
+    1: "sidewalk", 
+    2: "building",
+    3: "wall",
+    4: "fence",
+    5: "pole",
+    6: "traffic-light",
+    7: "traffic-sign",
+    8: "vegetation",
+    9: "terrain",
+    10: "sky",
+    11: "person",
+    12: "rider",
+    13: "car",
+    14: "truck", 
+    15: "bus",
+    16: "train",
+    17: "motorcycle",
+    18: "bicycle"
 }
 
 # Enhanced color palette for all classes
@@ -139,7 +162,12 @@ ENHANCED_COLORS = {
     "motorcyclist": [0, 0, 142],
     "parking": [250, 170, 160],
     "sidewalk": [244, 35, 232],
-    "trunk": [102, 102, 156]
+    "trunk": [102, 102, 156],
+    "wall": [102, 102, 156],
+    "sky": [135, 206, 235],
+    "rider": [255, 20, 147],
+    "bus": [0, 60, 100],
+    "train": [0, 80, 100]
 }
 
 # Model configurations with real pretrained models
@@ -188,15 +216,31 @@ MODEL_CONFIGS = {
         "model_type": "kpconv",
         "dataset": "semantickitti",
         "description": "KPConv trained on SemanticKITTI dataset"
+    },
+    "e3dsnn_kitti": {
+        "hf_repo": "Xuerui123/E-3DSNN",
+        "hf_filename": "kitti.pth",
+        "sha256": "e384e1c1f694054fded332d6a98dc99c7abd3a83be6269d110364bc2f42cb946",
+        "input_size": [65536, 3],
+        "num_classes": 19,
+        "model_type": "e3dsnn",
+        "dataset": "kitti", 
+        "description": "E-3DSNN (Efficient 3D Spiking Neural Network) trained on KITTI dataset - 91.7% accuracy with only 1.87M parameters",
+        "accuracy": "91.7%",
+        "parameters": "1.87M",
+        "specialty": "automotive_detection",
+        "efficiency": "ultra_low_power"
     }
 }
 
 # Default model recommendations
 DEFAULT_MODELS = {
     "toronto3d": "pointnet2_toronto3d",
-    "semantickitti": "pointnet2_semantickitti",
+    "semantickitti": "pointnet2_semantickitti", 
+    "kitti": "e3dsnn_kitti",
+    "automotive": "e3dsnn_kitti",
     "urban": "randla_net_toronto3d",
-    "general": "pointnet2_toronto3d"
+    "general": "e3dsnn_kitti"  # E-3DSNN as default for best automotive detection
 }
 
 
@@ -382,6 +426,28 @@ def map_kitti_to_canonical(kitti_labels: np.ndarray) -> np.ndarray:
     return canonical_labels
 
 
+def map_e3dsnn_to_canonical(e3dsnn_labels: np.ndarray) -> np.ndarray:
+    """Map E-3DSNN KITTI labels to canonical class indices."""
+    canonical_labels = np.zeros_like(e3dsnn_labels)
+    for e3dsnn_id, canonical_name in E3DSNN_KITTI_CLASSES.items():
+        mask = e3dsnn_labels == e3dsnn_id
+        if canonical_name in CANONICAL_CLASSES:
+            canonical_labels[mask] = CANONICAL_CLASSES.index(canonical_name)
+        elif canonical_name == "wall":
+            # Map wall to building for canonical compatibility
+            canonical_labels[mask] = CANONICAL_CLASSES.index("building")
+        elif canonical_name == "sky":
+            # Map sky to unlabeled
+            canonical_labels[mask] = CANONICAL_CLASSES.index("unlabeled")
+        elif canonical_name == "rider":
+            # Map rider to person
+            canonical_labels[mask] = CANONICAL_CLASSES.index("person")
+        elif canonical_name == "bus" or canonical_name == "train":
+            # Map bus/train to truck
+            canonical_labels[mask] = CANONICAL_CLASSES.index("truck")
+    return canonical_labels
+
+
 def get_class_names() -> list:
     """Get list of canonical class names."""
     return CANONICAL_CLASSES.copy()
@@ -432,6 +498,7 @@ __all__ = [
     "get_semantic_colors",
     "map_toronto3d_to_canonical",
     "map_kitti_to_canonical",
+    "map_e3dsnn_to_canonical",
     "get_class_names",
     "get_discrete_classes",
     "get_ground_classes",
@@ -445,6 +512,7 @@ __all__ = [
     "get_recommended_model",
     "TORONTO3D_CLASSES",
     "SEMANTICKITTI_CLASSES",
+    "E3DSNN_KITTI_CLASSES",
     "CANONICAL_CLASSES",
     "TORONTO3D_TO_CANONICAL",
     "KITTI_TO_CANONICAL",

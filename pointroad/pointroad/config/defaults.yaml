@@ -7,8 +7,8 @@ io:
   default_format: ply
 
 downsample:
-  target_points_min: 200000
-  target_points_max: 400000
+  target_points_min: 400000
+  target_points_max: 600000
   initial_voxel_size: 0.05
   plane_guardrail_rmse: 0.02
   adaptive_max_voxel_size: 0.25

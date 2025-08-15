@@ -205,7 +205,7 @@ class ConsoleSemanticSegmentationGUI:
             # Downsample for processing
             print("\n🔄 Step 2/5: Downsampling point cloud...")
             downsample_start = time.time()
-            pcd_downsampled = self.downsample_for_processing(pcd, target_points=100000)
+            pcd_downsampled = self.downsample_for_processing(pcd, target_points=500000)
             points_downsampled = np.asarray(pcd_downsampled.points)
             downsample_time = time.time() - downsample_start
             
@@ -340,7 +340,7 @@ class ConsoleSemanticSegmentationGUI:
         
         input("\nPress Enter to continue...")
     
-    def downsample_for_processing(self, pcd, target_points: int = 100000):
+    def downsample_for_processing(self, pcd, target_points: int = 500000):
         """Downsample point cloud with progress feedback."""
         import open3d as o3d
         

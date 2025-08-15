@@ -5,6 +5,22 @@ from typing import Dict, List, Any
 import json
 import pandas as pd
 import open3d as o3d
+import numpy as np
+
+
+class NumpyJSONEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles numpy types."""
+    
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
 
 
 def export_colored_point_cloud(pcd: o3d.geometry.PointCloud, path: Path) -> None:
@@ -17,7 +33,7 @@ def export_instances_json(instances: List[Dict[str, Any]], path: Path) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
-        json.dump(instances, f, indent=2)
+        json.dump(instances, f, indent=2, cls=NumpyJSONEncoder)
 
 
 def export_summary_csv(rows: List[Dict[str, Any]], path: Path) -> None:

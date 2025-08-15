@@ -1,8 +1,10 @@
 open3d==0.18.0
 # Open3D-ML API is available under open3d.ml as part of Open3D wheels
 torch==2.2.2
+torchvision==0.17.2
 numpy==1.26.4
 scipy==1.11.4
+scikit-learn==1.4.2
 pydantic==2.7.2
 pydantic-settings==2.2.1
 PyYAML==6.0.1
@@ -21,4 +23,6 @@ isort==5.13.2
 ruff==0.4.7
 pyinstaller==6.7.0
 pip-tools==7.4.1
+huggingface-hub==0.21.4
+requests==2.32.3
 

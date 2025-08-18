@@ -78,3 +78,4 @@ echo    - Console interface (no graphics drivers needed)
 echo    - Multiple export formats (PLY, JSON, CSV)
 echo.
 pause
+

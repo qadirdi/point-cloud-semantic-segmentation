@@ -48,16 +48,16 @@ def load_config() -> Dict[str, Any]:
     return {
         "car_detection": {
             "clustering": {
-                "eps": 0.3,
-                "min_points": 30,
-                "confidence_threshold": 0.65
+                "eps": 0.4,               # Increased for better connectivity
+                "min_points": 15,         # Reduced for better small car detection
+                "confidence_threshold": 0.50  # Lowered for better recall
             },
             "dimensions": {
-                "length_range": [3.0, 6.0],
-                "width_range": [1.5, 2.5],
-                "height_range": [1.2, 2.2],
-                "volume_range": [8.0, 30.0],
-                "aspect_ratio_range": [1.5, 3.0]
+                "length_range": [2.5, 7.5],  # Wider range for all vehicle types
+                "width_range": [1.3, 3.0],   # More flexible width
+                "height_range": [1.0, 2.8],  # More flexible height
+                "volume_range": [4.0, 40.0], # Wider volume range
+                "aspect_ratio_range": [1.2, 4.5]  # More flexible ratios
             }
         }
     }
@@ -177,15 +177,15 @@ def is_car_like_cluster(points: np.ndarray, dimensions: Dict[str, float], car_co
     car_config = config.get("car_detection", {})
     dim_config = car_config.get("dimensions", {})
     
-    # Typical car dimensions (in meters)
-    CAR_LENGTH_RANGE = tuple(dim_config.get("length_range", [3.0, 6.0]))
-    CAR_WIDTH_RANGE = tuple(dim_config.get("width_range", [1.5, 2.5]))
-    CAR_HEIGHT_RANGE = tuple(dim_config.get("height_range", [1.2, 2.2]))
-    CAR_VOLUME_RANGE = tuple(dim_config.get("volume_range", [8.0, 30.0]))
-    CAR_ASPECT_RATIO_RANGE = tuple(dim_config.get("aspect_ratio_range", [1.5, 3.0]))
+    # More flexible car dimensions (in meters) - covers sedans to SUVs/trucks
+    CAR_LENGTH_RANGE = tuple(dim_config.get("length_range", [2.5, 7.5]))  # Compact cars to large SUVs
+    CAR_WIDTH_RANGE = tuple(dim_config.get("width_range", [1.3, 3.0]))   # Wider range for different vehicle types
+    CAR_HEIGHT_RANGE = tuple(dim_config.get("height_range", [1.0, 2.8]))  # Lower cars to high SUVs/trucks
+    CAR_VOLUME_RANGE = tuple(dim_config.get("volume_range", [4.0, 40.0])) # Wider volume range
+    CAR_ASPECT_RATIO_RANGE = tuple(dim_config.get("aspect_ratio_range", [1.2, 4.5])) # More flexible ratios
     
-    # Confidence threshold from config
-    confidence_threshold = car_config.get("clustering", {}).get("confidence_threshold", 0.65)
+    # Lower confidence threshold for better recall
+    confidence_threshold = car_config.get("clustering", {}).get("confidence_threshold", 0.55)
     
     length = dimensions["length"]
     width = dimensions["width"]
@@ -241,14 +241,14 @@ def is_car_like_cluster(points: np.ndarray, dimensions: Dict[str, float], car_co
         aspect_score = max(0, CAR_ASPECT_RATIO_RANGE[1] / aspect_ratio)
     scores.append(aspect_score)
     
-    # Point density score (cars should have reasonable point density)
+    # Point density score (more flexible for varying scan densities)
     point_density = len(points) / volume if volume > 0 else 0
-    if 50 <= point_density <= 500:  # Good density range
+    if 20 <= point_density <= 800:  # More flexible density range for different scan resolutions
         density_score = 1.0
-    elif point_density < 50:
-        density_score = point_density / 50
+    elif point_density < 20:
+        density_score = point_density / 20  # Gradually decrease score for sparse scans
     else:
-        density_score = 500 / point_density
+        density_score = 800 / point_density  # Gradually decrease score for very dense scans
     scores.append(density_score)
     
     # Combine geometric scores
@@ -295,9 +295,9 @@ def enhanced_car_clustering(pcd: o3d.geometry.PointCloud,
     car_points = points[car_mask]
     car_confidences = car_confidence_scores[car_mask]
     
-    # Use smaller eps for cars (they're more compact)
-    car_eps = eps * 0.7  # Tighter clustering for cars
-    car_min_points = min_points  # Using configured min_points
+    # Optimized clustering parameters for better car detection
+    car_eps = eps * 0.8  # Slightly looser clustering to catch separated car parts
+    car_min_points = max(10, min_points // 2)  # Reduced minimum points for better detection of smaller cars
     
     # Run DBSCAN on potential car points
     if SKLEARN_AVAILABLE:
@@ -382,6 +382,96 @@ def enhanced_car_clustering(pcd: o3d.geometry.PointCloud,
     return full_labels, car_instances
 
 
+def memory_safe_clustering(points: np.ndarray, eps: float, min_pts: int, class_name: str) -> np.ndarray:
+    """Perform memory-safe clustering to prevent allocation errors."""
+    max_points_for_clustering = 120000  # Increased for better precision while maintaining safety
+    
+    if len(points) <= max_points_for_clustering:
+        # Safe to cluster directly
+        if SKLEARN_AVAILABLE:
+            try:
+                clustering = DBSCAN(eps=eps, min_samples=min_pts).fit(points)
+                return clustering.labels_
+            except MemoryError:
+                logger.warning(f"DBSCAN memory error for {class_name}, using fallback")
+                return simple_distance_clustering(points, eps, min_pts)
+        else:
+            return simple_distance_clustering(points, eps, min_pts)
+    else:
+        # Too many points - use sampling approach
+        logger.info(f"Class {class_name} has {len(points):,} points, using memory-safe sampling")
+        
+        # Sample points for clustering
+        sample_indices = np.random.choice(len(points), max_points_for_clustering, replace=False)
+        sample_points = points[sample_indices]
+        
+        try:
+            if SKLEARN_AVAILABLE:
+                # Cluster the sample
+                clustering = DBSCAN(eps=eps, min_samples=min_pts).fit(sample_points)
+                sample_labels = clustering.labels_
+                
+                # Map results back to full point cloud using nearest neighbors
+                from sklearn.neighbors import NearestNeighbors
+                nbrs = NearestNeighbors(n_neighbors=1, algorithm='ball_tree').fit(sample_points)
+                distances, indices = nbrs.kneighbors(points)
+                
+                # Map cluster labels back
+                full_labels = sample_labels[indices.flatten()]
+                
+                # Filter out points that are too far from their nearest cluster center
+                max_distance = eps * 2.0  # Points further than this are considered noise
+                noise_mask = distances.flatten() > max_distance
+                full_labels[noise_mask] = -1
+                
+                logger.info(f"Memory-safe clustering: {len(np.unique(full_labels)) - 1} clusters found")
+                return full_labels
+            else:
+                return simple_distance_clustering(points, eps, min_pts)
+                
+        except MemoryError as e:
+            logger.error(f"Memory error in clustering {class_name}: {e}")
+            # Fallback: create simple clusters based on spatial proximity
+            return simple_spatial_clustering(points, eps, min_pts)
+
+
+def simple_spatial_clustering(points: np.ndarray, eps: float, min_pts: int) -> np.ndarray:
+    """Ultra-simple clustering based on spatial grids to avoid memory issues."""
+    logger.info("Using ultra-safe grid-based clustering")
+    
+    # Create spatial grid
+    grid_size = eps * 2.0
+    min_coords = np.min(points, axis=0)
+    max_coords = np.max(points, axis=0)
+    
+    # Calculate grid dimensions
+    grid_dims = np.ceil((max_coords - min_coords) / grid_size).astype(int)
+    
+    # Assign points to grid cells
+    grid_indices = np.floor((points - min_coords) / grid_size).astype(int)
+    
+    # Convert multi-dimensional indices to single index
+    flat_indices = np.ravel_multi_index(
+        grid_indices.T, grid_dims, mode='clip'
+    )
+    
+    # Count points in each cell
+    unique_cells, counts = np.unique(flat_indices, return_counts=True)
+    
+    # Create cluster labels
+    labels = np.full(len(points), -1)
+    cluster_id = 0
+    
+    for cell_idx, count in zip(unique_cells, counts):
+        if count >= min_pts:
+            cell_mask = flat_indices == cell_idx
+            labels[cell_mask] = cluster_id
+            cluster_id += 1
+    
+    logger.info(f"Grid-based clustering found {cluster_id} clusters")
+    return labels
+
+
 def enhanced_clustering_all_classes(pcd: o3d.geometry.PointCloud,
                                   labels: np.ndarray,
                                   class_names: List[str],
@@ -405,24 +495,22 @@ def enhanced_clustering_all_classes(pcd: o3d.geometry.PointCloud,
     # Default parameters optimized for each class
     if eps_by_class is None:
         eps_by_class = {
-            "car": config.get("car_detection", {}).get("clustering", {}).get("eps", 0.25),  # Tighter for cars
-            "building": 0.8,    # Looser for buildings
-            "road": 1.5,       # Very loose for road segments
-            "sidewalk": 0.7,   # Medium for sidewalks
-            "vegetation": 0.5,  # Medium-tight for vegetation
-            "pole": 0.35,       # Tighter for poles
+            "car": config.get("car_detection", {}).get("clustering", {}).get("eps", 0.4),  # Optimized for cars
+            "building": 1.2,    # Increased for large complex buildings (like L-shapes)
+            "road": 2.0,       # Very loose for road segments
+            "sidewalk": 0.8,   # Medium for sidewalks
+            "pole": 0.3,       # Tighter for poles
             "unlabeled": 0.5   # Default
         }
     
-    # Default minimum points per class
+    # Default minimum points per class - optimized for better detection
     default_min_points = {
-        "car": config.get("car_detection", {}).get("clustering", {}).get("min_points", 20),  # Reduced for cars
-        "building": 50,    # Higher for buildings
-        "road": 100,       # Much higher for road segments
-        "sidewalk": 40,    # Medium for sidewalks
-        "vegetation": 20,  # Lower for vegetation
-        "pole": 15,        # Lower for poles
-        "unlabeled": 20    # Default
+        "car": config.get("car_detection", {}).get("clustering", {}).get("min_points", 15),  # Further reduced for smaller cars
+        "building": 80,    # Increased for substantial buildings
+        "road": 150,       # Much higher for meaningful road segments
+        "sidewalk": 30,    # Medium for sidewalks
+        "pole": 10,        # Lower for thin poles
+        "unlabeled": 15    # Default - lower threshold
     }
     
     # Use provided min_points or merge defaults with config
@@ -466,13 +554,9 @@ def enhanced_clustering_all_classes(pcd: o3d.geometry.PointCloud,
             all_instances.extend(car_instances)
             
         else:
-            # Standard clustering for other classes
+            # Memory-safe clustering for other classes
             if len(class_points) >= min_pts:
-                if SKLEARN_AVAILABLE:
-                    clustering = DBSCAN(eps=eps, min_samples=min_pts).fit(class_points)
-                    cluster_labels = clustering.labels_
-                else:
-                    cluster_labels = simple_distance_clustering(class_points, eps, min_pts)
+                cluster_labels = memory_safe_clustering(class_points, eps, min_pts, class_name)
                 
                 unique_labels = np.unique(cluster_labels)
                 valid_labels = unique_labels[unique_labels >= 0]

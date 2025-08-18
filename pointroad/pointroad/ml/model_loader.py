@@ -61,10 +61,10 @@ SEMANTICKITTI_CLASSES = {
     19: "traffic-sign"
 }
 
-# Enhanced canonical classes combining both datasets
+# Enhanced canonical classes combining both datasets - NO VEGETATION
 CANONICAL_CLASSES = [
     "unlabeled", "road", "road_marking", "natural", "building", "utility_line",
-    "pole", "car", "fence", "traffic_sign", "traffic_light", "vegetation", 
+    "pole", "car", "fence", "traffic_sign", "traffic_light", 
     "terrain", "other_ground", "other_object", "bicycle", "motorcycle", 
     "truck", "other-vehicle", "person", "bicyclist", "motorcyclist", 
     "parking", "sidewalk", "trunk"
@@ -136,7 +136,7 @@ E3DSNN_KITTI_CLASSES = {
     18: "bicycle"
 }
 
-# Enhanced color palette for all classes
+# Enhanced color palette for all classes - NO VEGETATION
 ENHANCED_COLORS = {
     "unlabeled": [0, 0, 0],
     "road": [128, 64, 128],
@@ -149,7 +149,6 @@ ENHANCED_COLORS = {
     "fence": [190, 153, 153],
     "traffic_sign": [220, 220, 0],
     "traffic_light": [250, 170, 30],
-    "vegetation": [107, 142, 35],
     "terrain": [152, 251, 152],
     "other_ground": [70, 130, 180],
     "other_object": [102, 102, 156],
@@ -457,7 +456,7 @@ def get_discrete_classes() -> set:
     """Get set of classes that represent discrete objects."""
     return {"car", "bicycle", "motorcycle", "truck", "other-vehicle", 
             "person", "bicyclist", "motorcyclist", "building", "fence", 
-            "vegetation", "trunk", "pole", "traffic-sign", "traffic_light",
+            "trunk", "pole", "traffic-sign", "traffic_light",
             "utility_line", "other_object"}
 
 
@@ -467,8 +466,8 @@ def get_ground_classes() -> set:
 
 
 def get_vegetation_classes() -> set:
-    """Get set of vegetation classes."""
-    return {"vegetation", "trunk", "natural"}
+    """Get set of vegetation classes (DEPRECATED - vegetation removed)."""
+    return {"trunk", "natural"}  # No more vegetation class
 
 
 def get_vehicle_classes() -> set:
